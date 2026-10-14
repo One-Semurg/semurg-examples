@@ -1,0 +1,2 @@
+{ "name": "semurg-demo-mastra", "private": true, "type": "module",
+  "dependencies": { "@mastra/mcp": "latest", "@mastra/core": "latest", "tsx": "latest", "zod": "latest" } }

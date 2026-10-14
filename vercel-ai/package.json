@@ -1,0 +1,3 @@
+{ "name": "semurg-demo-vercel-ai", "private": true, "type": "module",
+  "dependencies": { "ai": "latest", "tsx": "latest", "zod": "latest" },
+  "optionalDependencies": { "@ai-sdk/mcp": "latest" } }
