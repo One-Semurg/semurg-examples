@@ -1,18 +1,20 @@
 # Semurg memory examples
 
-Runnable programs that give an AI agent framework Semurg as its memory: the seven memory tools (status, remember, recall,
+Runnable programs that give an AI agent framework Semurg as its memory: the memory tools (status, remember, recall,
 relate, forget, context, document) over MCP or plain HTTP, against a Semurg node you run yourself.
 
 Each program runs twelve checked steps against a fresh node and prints the time of every call. The table says which release
 it last ran on, with which package versions, and the sha256 of the file that ran: the file in this repository is that file.
 
-Install a node: https://one.semurg.io/install (Intel and AMD x86_64 with AVX2 or newer: Linux, or Windows through WSL2 or
-Docker; no Mac or ARM build yet). Every tool, route and call: https://one.semurg.io/llms.txt
+Install a node: https://one.semurg.io/install (Linux on Intel or AMD x86_64 with AVX2 or newer and glibc 2.34 or newer, or any
+x86_64 Linux with Docker; no Mac or ARM build yet). Every tool, route and call: https://one.semurg.io/llms.txt
 
 Run one:
 
     export SEMURG_MCP_URL=http://127.0.0.1:4000/v1/mcp
-    export SEMURG_API_TOKEN=<the token your node printed at install>
+    # the API token is never printed; read it into your shell (the installer's SUCCESS banner shows this line):
+    export SEMURG_API_TOKEN="$(sudo grep '^SEMURG_API_TOKEN=' /etc/semurg/semurg.env | cut -d= -f2-)"
+    # a node in Docker: export SEMURG_API_TOKEN="$(docker exec semurg cat /var/lib/semurg/.api_token)"
     cd langchain && pip install -r requirements.txt && python demo.py
 
 | Framework | Status on r11.115.20261018.0598d3b | Packages | File sha256 (first 16) |
@@ -28,5 +30,9 @@ Run one:
 | openai-agents | ran end to end | openai-agents=0.24.0, mcp=2.3.0 | `fbd38b1b6ea983fd` |
 | pydantic-ai | ran end to end | pydantic-ai-slim=2.57.0, mcp=2.3.0 | `3c2b557db70872d5` |
 | vercel-ai | ran end to end | ai=7.0.143, @ai-sdk/mcp=2.0.78 | `e7a50461890e9699` |
+
+These are the files that ran on r11.115. Every framework above passed again, with newer package versions, on the published
+r11.132.20261027.a274a28; https://one.semurg.io/agents lists the newest run. This repository moves to those files, each with
+its sha256, once they are published here.
 
 Questions, results on your own machine, or a framework you want here: https://one.semurg.io/contact
