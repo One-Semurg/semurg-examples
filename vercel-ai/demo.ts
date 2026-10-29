@@ -1,5 +1,5 @@
-// Customer-side demo: calls a Semurg node's MCP memory server through the Vercel AI SDK's own MCP client. Part of the fenced examples
-// directory (scripts/ci/agent_examples_fence.sh): never imported, built or shipped by the product. No LLM is in the loop: the tools
+// Customer-side demo: calls a Semurg node's MCP memory server through the Vercel AI SDK's own MCP client.
+// No LLM is in the loop: the tools
 // are called directly through the framework's tool objects, so what this proves is the framework's MCP client against Semurg.
 //   SEMURG_MCP_URL=https://NODE/v1/mcp SEMURG_API_TOKEN=... npx tsx demo.ts       (token optional on an open node)
 // Prints DEMO-VERSION / DEMO-STEP lines and one DEMO-RESULT line; exit 0 PASS, 1 FAIL.
@@ -19,7 +19,17 @@ const FACTS = {
   relations: [{ source: PERSON, target: ORG, type: "WORKS_AT" }],
 };
 const NEED = ["memory_status", "memory_remember", "memory_recall", "memory_relate", "memory_forget", "memory_context", "memory_document"];
-const KEYS = ["status", "remember", "recall", "context", "relate", "recall2", "document", "docctx", "miss", "refusal", "forget", "gone"];
+const KEYS = ["status", "remember", "recall", "context", "relate", "recall2", "document", "docctx", "g7remember", "g7", "miss", "refusal", "forget", "gone"];
+// G7: the answer QUALITY counts, not only the seven calls: a fact TWO relations out must be an answer.
+// Five facts that make a two-relation question, in this run's own scope.
+const G7_FACTS = {
+  entities: [{ name: "Priya Raman", type: "person" }, { name: "Orion", type: "project" }, { name: "Halcyon Labs", type: "organization" },
+             { name: "Vega", type: "library" }, { name: "Tomas Berg", type: "person" }],
+  relations: [{ source: "Priya Raman", target: "Orion", type: "LEADS" }, { source: "Orion", target: "Halcyon Labs", type: "BELONGS_TO" },
+              { source: "Orion", target: "Vega", type: "DEPENDS_ON" }, { source: "Tomas Berg", target: "Vega", type: "MAINTAINS" },
+              { source: "Priya Raman", target: "Tomas Berg", type: "MENTORS" }],
+};
+const G7_Q = "Who maintains the library that Priya's project depends on?";
 const PROJECT = `Orion ${RUN}`;
 const TEXT = `${PERSON} works at ${ORG} and leads the billing rewrite there.`;
 const DOC_B64 = Buffer.from(`Meeting notes\n\n${PERSON} approved the ${PROJECT} budget on Monday.\n`).toString("base64");
@@ -41,10 +51,31 @@ function text(x: any): string {
   const t = Array.isArray(c) ? c.map((i) => (typeof i === "string" ? i : i?.text ?? JSON.stringify(i))).join("\n") : typeof c === "string" ? c : JSON.stringify(c);
   return x?.isError ? "[isError] " + t : t;
 }
-/** A tool result that says it failed: the MCP isError flag, an ok:false body, or a refusal. */
+/** The reply as an object when it is one (JSON), else null. */
+function parsed(t: string): Record<string, any> | null {
+  try { const o = JSON.parse(t); return o && typeof o === "object" && !Array.isArray(o) ? o : null; } catch { return null; }
+}
+/** A tool result that says it failed: the MCP isError flag, or a PARSED top-level object with ok false, a truthy error or a refusal field.
+ *  Never the bare word "refused": memory_status carries refused_at_ms / refused_groups counters on an ok:true reply (r11.125 false-failed
+ *  every demo on it). Text that is not an object keeps the textual ok:false / error:true check. */
 function failed(t: string): boolean {
+  if (!t || t.startsWith("[isError]")) return true;
+  const o = parsed(t);
+  if (o) return o.ok === false || !!o.error || !!o.refused || !!o.refusal;
   const s = t.replace(/ /g, "").toLowerCase();
-  return !t || t.startsWith("[isError]") || s.includes('"ok":false') || s.includes('"error":true') || s.includes("refused");
+  return s.includes('"ok":false') || s.includes('"error":true');
+}
+/** A facts-only remember answers {"ok":true,"mode":"facts","counts":{"relations":N,...}} (no agent_facts: that is the content form). */
+function g7Stored(t: string): boolean {
+  const o = parsed(t);
+  return o ? o.ok === true && (o.counts?.relations ?? 0) >= 5 : t.replace(/ /g, "").includes('"relations":5');
+}
+/** G7: the reply's facts include Tomas Berg MAINTAINS Vega and Orion DEPENDS_ON Vega (the chain two relations out). */
+function g7Answered(t: string): boolean {
+  const items: any[] = parsed(t)?.items ?? [];
+  const facts = items.filter((i) => i && i.kind === "fact").map((i) => `${i.subject}|${i.relation}|${i.object ?? i.text ?? ""}`);  // compact: object; full: text
+  if (facts.length) return facts.includes("Tomas Berg|MAINTAINS|Vega") && facts.includes("Orion|DEPENDS_ON|Vega");
+  return t.includes("MAINTAINS") && t.includes("DEPENDS_ON") && t.includes("Tomas Berg") && t.includes("Vega");
 }
 /** The same scenario for every framework: all seven memory tools, text sent WITH its facts, a context answer cited to its passage, a
  *  document, a name never stored, a refusal by name, forget and its proof. Every call is timed (DEMO-TIME <tool> <ms>). */
@@ -77,6 +108,10 @@ async function scenario(call: (name: string, args: object) => Promise<string>, t
     rt.document = step("memory_document stores a text file", dc.includes("doc_id") && !failed(dc), dc);
     const dx = await timed("memory_context", { query: `What did ${PERSON} approve?` });
     rt.docctx = step(`memory_context finds the document's passage (${q(PROJECT)})`, dx.includes(PROJECT) && !failed(dx), dx);
+    const g7r = await timed("memory_remember", { facts: G7_FACTS, source: `agent-demo/${ID}/g7` });
+    rt.g7remember = step("memory_remember (G7: five entities, five relations)", g7Stored(g7r) && !failed(g7r), g7r);
+    const g7 = await timed("memory_context", { query: G7_Q, k: 8, hops: 2 });
+    rt.g7 = step("G7: a two-relation question names Tomas Berg MAINTAINS Vega and Orion DEPENDS_ON Vega", g7Answered(g7) && !failed(g7), g7);
     const ms = await timed("memory_recall", { subject: `Nobody ${RUN}` });
     rt.miss = step("a name never stored answers nothing_stored", ms.includes("nothing_stored") && !failed(ms), ms);
     const rf = await timed("memory_document", { content_base64: JUNK_B64, name: "junk.bin" });

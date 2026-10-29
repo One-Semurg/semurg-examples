@@ -1,5 +1,5 @@
 # Customer-side demo: calls a Semurg node's MCP memory server through Elixir LangChain's own MCP adapter (the langchain_mcp package, on the Anubis MCP client).
-# Part of the fenced examples directory (scripts/ci/agent_examples_fence.sh): never imported, built or shipped by the product. No LLM is in the loop:
+# No LLM is in the loop:
 # the tools are called directly through the adapter's LangChain.Function structs, so what this proves is the framework's MCP client against Semurg.
 #   SEMURG_MCP_URL=https://NODE/v1/mcp SEMURG_API_TOKEN=... elixir demo.exs        (token optional on an open node)
 #   DEMO_INSTALL_ONLY=1 elixir demo.exs      installs the packages and prints their versions, then stops (the runner's phase 1: no token, no url)
@@ -30,16 +30,60 @@ defmodule Demo do
   def text(%{"text" => t}), do: t
   def text(other), do: inspect(other)
 
-  # A tool result that says it failed: the error mark, an ok:false body, or a refusal.
-  def failed?(t) do
-    s = t |> String.replace(" ", "") |> String.downcase()
-    t == "" or String.starts_with?(t, "[isError]") or String.contains?(s, "\"ok\":false") or String.contains?(s, "refused")
+  # The reply as a map when it is a JSON object, else nil.
+  def parsed(t) do
+    case JSON.decode(t) do
+      {:ok, %{} = o} -> o
+      _ -> nil
+    end
   end
+
+  # A tool result that says it failed: the error mark, or a PARSED top-level object with ok false, a truthy error or a refusal field.
+  # Never the bare word "refused": memory_status carries refused_at_ms / refused_groups counters on an ok:true reply (r11.125 false-failed
+  # every demo on it). Text that is not an object keeps the textual ok:false / error:true check.
+  def failed?(t) do
+    cond do
+      t == "" or String.starts_with?(t, "[isError]") -> true
+      o = parsed(t) -> o["ok"] == false or truthy?(o["error"]) or truthy?(o["refused"]) or truthy?(o["refusal"])
+      true -> s = t |> String.replace(" ", "") |> String.downcase(); String.contains?(s, "\"ok\":false") or String.contains?(s, "\"error\":true")
+    end
+  end
+
+  defp truthy?(v), do: v not in [nil, false, "", 0]
+
+  # G7: a facts-only remember answers {"ok":true,"mode":"facts","counts":{"relations":N,...}} (no agent_facts: that is the content form).
+  def g7_stored?(t) do
+    case parsed(t) do
+      nil -> String.contains?(String.replace(t, " ", ""), "\"relations\":5")
+      o -> o["ok"] == true and (get_in(o, ["counts", "relations"]) || 0) >= 5
+    end
+  end
+
+  # G7: the reply's facts include Tomas Berg MAINTAINS Vega and Orion DEPENDS_ON Vega (the chain two relations out).
+  def g7_answered?(t) do
+    items = (parsed(t) || %{}) |> Map.get("items") |> List.wrap()
+    facts = for %{"kind" => "fact"} = i <- items, do: {i["subject"], i["relation"], i["object"] || i["text"]}   # compact: object; full: text
+
+    if facts != [],
+      do: {"Tomas Berg", "MAINTAINS", "Vega"} in facts and {"Orion", "DEPENDS_ON", "Vega"} in facts,
+      else: Enum.all?(["MAINTAINS", "DEPENDS_ON", "Tomas Berg", "Vega"], &String.contains?(t, &1))
+  end
+
+  # G7: the answer QUALITY counts, not only the seven calls: a fact TWO relations out must be an answer.
+  # Five facts that make a two-relation question, in this run's own scope.
+  def g7_facts do
+    ents = [{"Priya Raman", "person"}, {"Orion", "project"}, {"Halcyon Labs", "organization"}, {"Vega", "library"}, {"Tomas Berg", "person"}]
+    rels = [{"Priya Raman", "LEADS", "Orion"}, {"Orion", "BELONGS_TO", "Halcyon Labs"}, {"Orion", "DEPENDS_ON", "Vega"}, {"Tomas Berg", "MAINTAINS", "Vega"},
+            {"Priya Raman", "MENTORS", "Tomas Berg"}]
+    %{"entities" => for({n, ty} <- ents, do: %{"name" => n, "type" => ty}), "relations" => for({a, r, b} <- rels, do: %{"source" => a, "target" => b, "type" => r})}
+  end
+
+  def g7_q, do: "Who maintains the library that Priya's project depends on?"
 
   # The same scenario for every framework: all seven memory tools, text sent WITH its facts, a context answer cited to its passage, a
   # document, a name never stored, a refusal by name, forget and its proof. Every call is timed (DEMO-TIME <tool> <ms>).
   # `call` is (tool name, args map) -> text.
-  @keys [:status, :remember, :recall, :context, :relate, :recall2, :document, :docctx, :miss, :refusal, :forget, :gone]
+  @keys [:status, :remember, :recall, :context, :relate, :recall2, :document, :docctx, :g7remember, :g7, :miss, :refusal, :forget, :gone]
   def scenario(call, tool_names, run) do
     person = "Ada #{run}"
     org = "Acme #{run}"
@@ -72,6 +116,8 @@ defmodule Demo do
         rc2 = timed.("memory_recall", %{"subject" => person})
         dc = timed.("memory_document", %{"content_base64" => doc_b64, "name" => "notes-#{run}.txt"})
         dx = timed.("memory_context", %{"query" => "What did #{person} approve?"})
+        g7r = timed.("memory_remember", %{"facts" => g7_facts(), "source" => "agent-demo/#{@id}/g7"})
+        g7 = timed.("memory_context", %{"query" => g7_q(), "k" => 8, "hops" => 2})
         ms = timed.("memory_recall", %{"subject" => "Nobody #{run}"})
         rf = timed.("memory_document", %{"content_base64" => junk_b64, "name" => "junk.bin"})
         fg = timed.("memory_forget", %{"subject" => person, "reason" => "agent-demo/#{@id} cleanup"})
@@ -85,6 +131,8 @@ defmodule Demo do
           recall2: step("memory_recall again names the new edge #{inspect(mentee)}", has.(rc2, mentee) and not failed?(rc2), rc2),
           document: step("memory_document stores a text file", has.(dc, "doc_id") and not failed?(dc), dc),
           docctx: step("memory_context finds the document's passage (#{inspect(project)})", has.(dx, project) and not failed?(dx), dx),
+          g7remember: step("memory_remember (G7: five entities, five relations)", g7_stored?(g7r) and not failed?(g7r), g7r),
+          g7: step("G7: a two-relation question names Tomas Berg MAINTAINS Vega and Orion DEPENDS_ON Vega", g7_answered?(g7) and not failed?(g7), g7),
           miss: step("a name never stored answers nothing_stored", has.(ms, "nothing_stored") and not failed?(ms), ms),
           refusal: step("a file that is not a document is refused by name", failed?(rf) and has.(rf, "document_unsupported_kind"), rf),
           forget: step("memory_forget(#{inspect(person)})", fg != "" and not failed?(fg), fg),

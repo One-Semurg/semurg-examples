@@ -1,9 +1,9 @@
-# Customer-side demo: calls a Semurg node's MCP memory server through LangChain and LangGraph's own MCP client. Part of the fenced examples
-# directory (scripts/ci/agent_examples_fence.sh): never imported, built or shipped by the product. No LLM is in the loop: the tools
+# Customer-side demo: calls a Semurg node's MCP memory server through LangChain and LangGraph's own MCP client.
+# No LLM is in the loop: the tools
 # are called directly through the framework's tool objects, so what this proves is the framework's MCP client against Semurg.
 #   SEMURG_MCP_URL=https://NODE/v1/mcp SEMURG_API_TOKEN=... python demo.py        (token optional on an open node)
 # Prints DEMO-VERSION / DEMO-STEP lines and one DEMO-RESULT line; exit 0 PASS, 1 FAIL.
-import asyncio, base64, os, sys, time, uuid
+import ast, asyncio, base64, json, os, sys, time, uuid
 from importlib.metadata import version, PackageNotFoundError
 
 ID = "langchain"
@@ -18,7 +18,15 @@ PERSON, ORG, MENTEE = f"Ada {RUN}", f"Acme {RUN}", f"Bea {RUN}"
 FACTS = {"entities": [{"name": PERSON, "type": "person"}, {"name": ORG, "type": "organisation"}],
          "relations": [{"source": PERSON, "target": ORG, "type": "WORKS_AT"}]}
 NEED = {"memory_status", "memory_remember", "memory_recall", "memory_relate", "memory_forget", "memory_context", "memory_document"}
-KEYS = ("status", "remember", "recall", "context", "relate", "recall2", "document", "docctx", "miss", "refusal", "forget", "gone")
+KEYS = ("status", "remember", "recall", "context", "relate", "recall2", "document", "docctx", "g7remember", "g7", "miss", "refusal", "forget", "gone")
+# G7: the answer QUALITY counts, not only the seven calls: a fact TWO relations out must be an answer.
+# Five facts that make a two-relation question, in this run's own scope.
+G7_FACTS = {"entities": [{"name": "Priya Raman", "type": "person"}, {"name": "Orion", "type": "project"}, {"name": "Halcyon Labs", "type": "organization"},
+                         {"name": "Vega", "type": "library"}, {"name": "Tomas Berg", "type": "person"}],
+            "relations": [{"source": "Priya Raman", "target": "Orion", "type": "LEADS"}, {"source": "Orion", "target": "Halcyon Labs", "type": "BELONGS_TO"},
+                          {"source": "Orion", "target": "Vega", "type": "DEPENDS_ON"}, {"source": "Tomas Berg", "target": "Vega", "type": "MAINTAINS"},
+                          {"source": "Priya Raman", "target": "Tomas Berg", "type": "MENTORS"}]}
+G7_Q = "Who maintains the library that Priya's project depends on?"
 PROJECT = f"Orion {RUN}"
 TEXT = f"{PERSON} works at {ORG} and leads the billing rewrite there."
 DOC_B64 = base64.b64encode(f"Meeting notes\n\n{PERSON} approved the {PROJECT} budget on Monday.\n".encode()).decode()
@@ -48,10 +56,65 @@ def text(x):
     return ("[isError] " + t) if getattr(x, "isError", False) else t
 
 
+def parsed(t):
+    """The reply as a dict when it is one (JSON, or the Python repr some frameworks hand back), else None."""
+    for load in (json.loads, ast.literal_eval):
+        try:
+            o = load(t)
+            return o if isinstance(o, dict) else None
+        except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+            pass
+    return None
+
+
+def unwrap(o):
+    """A framework that hands back the whole MCP result as a dict ({'content': [{'type': 'text', 'text': ...}], 'isError': ...}; Google ADK
+    on r11.125): its text and its isError flag; (None, False) for anything else."""
+    if isinstance(o, dict) and isinstance(o.get("content"), list) and "ok" not in o:
+        return "\n".join(str(i.get("text", "")) for i in o["content"] if isinstance(i, dict)), bool(o.get("isError"))
+    return None, False
+
+
+def payload(t):
+    """The node's own reply object: parsed, and taken out of an MCP envelope when the framework returned one."""
+    o = parsed(t)
+    inner, _ = unwrap(o)
+    return parsed(inner) if inner is not None else o
+
+
 def failed(t):
-    """A tool result that says it failed: the MCP isError flag, an ok:false body, or a refusal."""
+    """A tool result that says it failed: the MCP isError flag, or a PARSED top-level object with ok false, a truthy error or a refusal
+    field. Never the bare word "refused": memory_status carries refused_at_ms / refused_groups counters on an ok:true reply (r11.125
+    false-failed every demo on it). Text that is not an object keeps the textual ok:false / error:true check."""
+    if not t or t.startswith("[isError]"):
+        return True
+    o = parsed(t)
+    inner, is_error = unwrap(o)
+    if inner is not None:
+        return is_error or failed(inner)
+    if o is not None:
+        return o.get("ok") is False or bool(o.get("error")) or bool(o.get("refused")) or bool(o.get("refusal"))
     s = t.replace(" ", "").lower()
-    return not t or t.startswith("[isError]") or '"ok":false' in s or "'ok':false" in s or "refused" in s
+    return '"ok":false' in s or "'ok':false" in s or '"error":true' in s or "'error':true" in s
+
+
+def g7_stored(t):
+    """A facts-only remember answers {"ok":true,"mode":"facts","counts":{"relations":N,...}} (no `agent_facts`: that is the content form)."""
+    o = payload(t)
+    if o is not None:
+        return o.get("ok") is True and ((o.get("counts") or {}).get("relations") or 0) >= 5
+    return '"relations":5' in t.replace(" ", "")
+
+
+def g7_answered(t):
+    """G7: the reply's facts include Tomas Berg MAINTAINS Vega and Orion DEPENDS_ON Vega (the chain two relations out)."""
+    o = payload(t)
+    items = (o or {}).get("items") or []
+    facts = [(str(i.get("subject", "")), str(i.get("relation", "")), str(i.get("object") or i.get("text") or ""))  # compact: object; full: text
+             for i in items if isinstance(i, dict) and i.get("kind") == "fact"]
+    if facts:
+        return ("Tomas Berg", "MAINTAINS", "Vega") in facts and ("Orion", "DEPENDS_ON", "Vega") in facts
+    return "MAINTAINS" in t and "DEPENDS_ON" in t and "Tomas Berg" in t and "Vega" in t
 
 
 async def scenario(call, tool_names):
@@ -87,6 +150,10 @@ async def scenario(call, tool_names):
         rt["document"] = step("memory_document stores a text file", "doc_id" in dc and not failed(dc), dc)
         dx = await timed("memory_context", {"query": f"What did {PERSON} approve?"})
         rt["docctx"] = step(f"memory_context finds the document's passage ({PROJECT!r})", PROJECT in dx and not failed(dx), dx)
+        g7r = await timed("memory_remember", {"facts": G7_FACTS, "source": f"agent-demo/{ID}/g7"})
+        rt["g7remember"] = step("memory_remember (G7: five entities, five relations)", g7_stored(g7r) and not failed(g7r), g7r)
+        g7 = await timed("memory_context", {"query": G7_Q, "k": 8, "hops": 2})
+        rt["g7"] = step("G7: a two-relation question names Tomas Berg MAINTAINS Vega and Orion DEPENDS_ON Vega", g7_answered(g7) and not failed(g7), g7)
         ms = await timed("memory_recall", {"subject": f"Nobody {RUN}"})
         rt["miss"] = step("a name never stored answers nothing_stored", "nothing_stored" in ms and not failed(ms), ms)
         rf = await timed("memory_document", {"content_base64": JUNK_B64, "name": "junk.bin"})

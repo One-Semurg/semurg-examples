@@ -1,5 +1,5 @@
-# Customer-side demo: Semurg's seven memory tools as Jido Actions, run by a Jido agent. Part of the fenced examples directory
-# (scripts/ci/agent_examples_fence.sh): never imported, built or shipped by the product. No LLM is in the loop: the Actions are run
+# Customer-side demo: Semurg's seven memory tools as Jido Actions, run by a Jido agent.
+# No LLM is in the loop: the Actions are run
 # directly (Jido.Exec.run/2 and the agent's cmd/2), so what this proves is Jido's own action and agent code against Semurg. Jido's
 # MCP package (jido_mcp) is deprecated, so the Actions call the node's HTTP memory API: the same six calls the MCP tools make.
 #   SEMURG_MCP_URL=https://NODE/v1/mcp SEMURG_API_TOKEN=... elixir demo.exs        (token optional on an open node)
@@ -30,10 +30,15 @@ defmodule SemurgNode do
       if(token == "", do: [], else: [{"authorization", "Bearer " <> token}])
   end
 
-  def status, do: handle(Req.get(base() <> "/v1/memory/status", headers: headers(), retry: false))
+  # ONE APP, MANY END USERS: every Action takes the end user's user_id (and a scope) and passes it through, so each end user's memory is
+  # their own and two never meet. A call without them uses this connection's scope and no user. An unset key is dropped (the node
+  # refuses a user_id of null).
+  def given(params), do: for({k, v} <- params, v != nil, into: %{}, do: {k, v})
+
+  def status(params), do: handle(Req.get(base() <> "/v1/memory/status", params: Enum.to_list(given(params)), headers: headers(), retry: false))
 
   def post(call, body),
-    do: handle(Req.post(base() <> "/v1/memory/" <> call, json: Map.put(body, :scope, System.get_env("SEMURG_MCP_SCOPE") || "demo-jido"), headers: headers(), retry: false))   # the HTTP routes read the scope from the BODY (the X-Semurg-Scope header is the MCP door's connection default)
+    do: handle(Req.post(base() <> "/v1/memory/" <> call, json: Map.put_new(given(body), :scope, System.get_env("SEMURG_MCP_SCOPE") || "demo-jido"), headers: headers(), retry: false))   # the HTTP routes read the scope and the user from the BODY (the X-Semurg-Scope header is the MCP door's connection default)
 
   defp handle({:ok, %Req.Response{status: s, body: b}}) when s in 200..299, do: {:ok, %{answer: b}}
   # the refusal's NAME first (a refusal body carries `refusal`, e.g. document_unsupported_kind): it is what a caller branches on, and
@@ -47,45 +52,45 @@ defmodule SemurgNode do
 end
 
 defmodule SemurgDemo.Status do
-  use Jido.Action, name: "memory_status", description: "Report whether shared memory is on for this node and which of YOUR scopes hold facts", schema: []
+  use Jido.Action, name: "memory_status", description: "Report whether shared memory is on for this node and which of YOUR scopes hold facts", schema: [scope: [type: :string], user_id: [type: :string]]
   @impl true
-  def run(_params, _context), do: SemurgNode.status()
+  def run(params, _context), do: SemurgNode.status(Map.take(params, [:scope, :user_id]))
 end
 
 defmodule SemurgDemo.Remember do
-  use Jido.Action, name: "memory_remember", description: "Store facts in shared agent memory", schema: [facts: [type: :map, required: true], content: [type: :string], source: [type: :string]]  # snippet
+  use Jido.Action, name: "memory_remember", description: "Store facts in shared agent memory", schema: [facts: [type: :map, required: true], content: [type: :string], source: [type: :string], scope: [type: :string], user_id: [type: :string]]  # snippet
   @impl true
-  def run(params, _context), do: SemurgNode.post("remember", Map.take(params, [:facts, :content, :source]))
+  def run(params, _context), do: SemurgNode.post("remember", Map.take(params, [:facts, :content, :source, :scope, :user_id]))
 end
 
 defmodule SemurgDemo.Recall do
-  use Jido.Action, name: "memory_recall", description: "Recall what is stored about ONE entity", schema: [subject: [type: :string, required: true], k: [type: :integer]]
+  use Jido.Action, name: "memory_recall", description: "Recall what is stored about ONE entity", schema: [subject: [type: :string, required: true], k: [type: :integer], scope: [type: :string], user_id: [type: :string]]
   @impl true
-  def run(params, _context), do: SemurgNode.post("recall", Map.take(params, [:subject, :k]))
+  def run(params, _context), do: SemurgNode.post("recall", Map.take(params, [:subject, :k, :scope, :user_id]))
 end
 
 defmodule SemurgDemo.Relate do
-  use Jido.Action, name: "memory_relate", description: "Add ONE typed edge between two entities in a scope", schema: [from: [type: :string, required: true], to: [type: :string, required: true], type: [type: :string, required: true]]
+  use Jido.Action, name: "memory_relate", description: "Add ONE typed edge between two entities in a scope", schema: [from: [type: :string, required: true], to: [type: :string, required: true], type: [type: :string, required: true], scope: [type: :string], user_id: [type: :string]]
   @impl true
-  def run(params, _context), do: SemurgNode.post("relate", Map.take(params, [:from, :to, :type]))
+  def run(params, _context), do: SemurgNode.post("relate", Map.take(params, [:from, :to, :type, :scope, :user_id]))
 end
 
 defmodule SemurgDemo.Forget do
-  use Jido.Action, name: "memory_forget", description: "Mark an entity as superseded in a scope", schema: [subject: [type: :string, required: true], reason: [type: :string]]
+  use Jido.Action, name: "memory_forget", description: "Mark an entity as superseded in a scope", schema: [subject: [type: :string, required: true], reason: [type: :string], scope: [type: :string], user_id: [type: :string]]
   @impl true
-  def run(params, _context), do: SemurgNode.post("forget", Map.take(params, [:subject, :reason]))
+  def run(params, _context), do: SemurgNode.post("forget", Map.take(params, [:subject, :reason, :scope, :user_id]))
 end
 
 defmodule SemurgDemo.Context do
-  use Jido.Action, name: "memory_context", description: "Retrieve what the memory holds that is relevant to a question", schema: [query: [type: :string, required: true], hops: [type: :integer], k: [type: :integer]]
+  use Jido.Action, name: "memory_context", description: "Retrieve what the memory holds that is relevant to a question", schema: [query: [type: :string, required: true], hops: [type: :integer], k: [type: :integer], scope: [type: :string], user_id: [type: :string]]
   @impl true
-  def run(params, _context), do: SemurgNode.post("context", Map.take(params, [:query, :hops, :k]))
+  def run(params, _context), do: SemurgNode.post("context", Map.take(params, [:query, :hops, :k, :scope, :user_id]))
 end
 
 defmodule SemurgDemo.Document do
-  use Jido.Action, name: "memory_document", description: "Store a document (a PDF, a Word .docx, an HTML page or a UTF-8 text file) as memory", schema: [content_base64: [type: :string, required: true], name: [type: :string]]
+  use Jido.Action, name: "memory_document", description: "Store a document (a PDF, a Word .docx, an HTML page or a UTF-8 text file) as memory", schema: [content_base64: [type: :string, required: true], name: [type: :string], scope: [type: :string], user_id: [type: :string]]
   @impl true
-  def run(params, _context), do: SemurgNode.post("document", Map.take(params, [:content_base64, :name]))
+  def run(params, _context), do: SemurgNode.post("document", Map.take(params, [:content_base64, :name, :scope, :user_id]))
 end
 
 defmodule SemurgDemo.MemoryAgent do
@@ -100,17 +105,23 @@ step = fn name, ok, detail ->
   ok
 end
 
-# a tool result that says it failed: an error tuple, an ok:false body or a refusal
-failed? = fn t ->
-  s = t |> SemurgNode.text() |> String.replace(~r/\s+/, "") |> String.downcase()
-  s == "" or String.contains?(s, ["refused", ~s("ok"=>false), ~s("error"=>true)])
+# a tool result that says it failed: judged on the node's DECODED reply (Req decodes the JSON body): ok false, a truthy error or a refusal
+# field. Never the bare word "refused": memory_status carries refused_at_ms / refused_groups counters on an ok:true reply (r11.125
+# false-failed every demo on it). A reply that is not an object keeps the textual ok:false / error:true check. Error tuples are judged by
+# `answered` (kind == :error).
+truthy? = fn v -> v not in [nil, false, "", 0] end
+failed? = fn
+  %{} = o -> o["ok"] == false or truthy?.(o["error"]) or truthy?.(o["refused"]) or truthy?.(o["refusal"])
+  t ->
+    s = t |> SemurgNode.text() |> String.replace(~r/\s+/, "") |> String.downcase()
+    s == "" or String.contains?(s, [~s("ok":false), ~s("error":true)])
 end
 
 # run an Action through Jido's own executor and flatten the answer to plain text
 call = fn action, params ->
   case Jido.Exec.run(action, params) do  # snippet
-    {:ok, %{answer: a}} -> {:ok, SemurgNode.text(a)}
-    {:ok, other} -> {:ok, SemurgNode.text(other)}
+    {:ok, %{answer: a}} -> {:ok, a}           # the decoded reply, judged as an object by failed?; `answered` flattens it for the text checks
+    {:ok, other} -> {:ok, other}
     {:error, reason} -> {:error, SemurgNode.text(reason)}
   end
 end
@@ -140,7 +151,26 @@ timed = fn action, params ->
 end
 has = &String.contains?/2
 # an answer the node gave (HTTP 2xx) that is not a refusal, and whose text passes pred
-answered = fn label, {kind, t}, pred -> step.(label, kind == :ok and not failed?.(t) and pred.(t), t) end
+answered = fn label, {kind, t}, pred -> s = SemurgNode.text(t); step.(label, kind == :ok and not failed?.(t) and pred.(s), s) end
+# G7: the answer QUALITY counts, not only the seven calls: a fact TWO relations out must be an answer.
+# Five facts that make a two-relation question, in this run's own scope.
+g7_facts = %{
+  entities: for({n, ty} <- [{"Priya Raman", "person"}, {"Orion", "project"}, {"Halcyon Labs", "organization"}, {"Vega", "library"}, {"Tomas Berg", "person"}], do: %{name: n, type: ty}),
+  relations: for({a, r, b} <- [{"Priya Raman", "LEADS", "Orion"}, {"Orion", "BELONGS_TO", "Halcyon Labs"}, {"Orion", "DEPENDS_ON", "Vega"},
+                               {"Tomas Berg", "MAINTAINS", "Vega"}, {"Priya Raman", "MENTORS", "Tomas Berg"}], do: %{source: a, target: b, type: r})
+}
+# a facts-only remember answers {"ok":true,"mode":"facts","counts":{"relations":N,...}} (no agent_facts: that is the content form)
+g7_stored? = fn
+  {:ok, %{} = o} -> o["ok"] == true and (get_in(o, ["counts", "relations"]) || 0) >= 5
+  _ -> false
+end
+# the reply's facts include Tomas Berg MAINTAINS Vega and Orion DEPENDS_ON Vega (the chain two relations out)
+g7_answered? = fn
+  {:ok, %{} = o} ->
+    facts = for %{"kind" => "fact"} = i <- List.wrap(o["items"]), do: {i["subject"], i["relation"], i["object"] || i["text"]}   # compact: object; full: text
+    {"Tomas Berg", "MAINTAINS", "Vega"} in facts and {"Orion", "DEPENDS_ON", "Vega"} in facts
+  _ -> false
+end
 
 st = timed.(SemurgDemo.Status, %{})
 rm = timed.(SemurgDemo.Remember, %{content: text, facts: facts, source: "agent-demo/#{id}"})
@@ -155,6 +185,8 @@ agent_answer = SemurgNode.text(agent.state.answer)
 
 dc = timed.(SemurgDemo.Document, %{content_base64: doc_b64, name: "notes-#{run_id}.txt"})
 dx = timed.(SemurgDemo.Context, %{query: "What did #{person} approve?"})
+g7r = timed.(SemurgDemo.Remember, %{facts: g7_facts, source: "agent-demo/#{id}/g7"})
+g7 = timed.(SemurgDemo.Context, %{query: "Who maintains the library that Priya's project depends on?", k: 8, hops: 2})
 ms = timed.(SemurgDemo.Recall, %{subject: "Nobody #{run_id}"})
 rf = timed.(SemurgDemo.Document, %{content_base64: junk_b64, name: "junk.bin"})
 fg = timed.(SemurgDemo.Forget, %{subject: person, reason: "agent-demo/#{id} cleanup"})
@@ -169,6 +201,8 @@ rt = %{
   recall2: answered.("memory_recall again names the new edge #{inspect(mentee)}", rc2, &has.(&1, mentee)),
   document: answered.("memory_document stores a text file", dc, &has.(&1, "doc_id")),
   docctx: answered.("memory_context finds the document's passage (#{inspect(project)})", dx, &has.(&1, project)),
+  g7remember: step.("memory_remember (G7: five entities, five relations)", g7_stored?.(g7r), SemurgNode.text(elem(g7r, 1))),
+  g7: step.("G7: a two-relation question names Tomas Berg MAINTAINS Vega and Orion DEPENDS_ON Vega", g7_answered?.(g7) and not failed?.(elem(g7, 1)), SemurgNode.text(elem(g7, 1))),
   miss: answered.("a name never stored answers nothing_stored", ms, &has.(&1, "nothing_stored")),
   refusal: step.("a file that is not a document is refused by name", elem(rf, 0) == :error and has.(elem(rf, 1), "document_unsupported_kind"), elem(rf, 1)),
   forget: answered.("memory_forget(#{inspect(person)})", fg, &(&1 != "")),
@@ -176,6 +210,20 @@ rt = %{
 }
 agent_ok = step.("agent.cmd(memory_recall) puts the answer in the agent's state", has.(agent_answer, org), agent_answer)
 
-keys = [:status, :remember, :recall, :context, :relate, :recall2, :document, :docctx, :miss, :refusal, :forget, :gone]
+# ONE APP, MANY END USERS, in the same scope: what end user A stores, end user B never sees. An Action that dropped user_id would put
+# both users in one memory, and B's recall would name A's fact: this step fails on exactly that.
+lena = "Lena #{run_id}"
+user_a = "user-a-#{run_id}"
+ua = call.(SemurgDemo.Remember, %{facts: %{entities: [%{name: lena, type: "person"}, %{name: org, type: "organisation"}], relations: [%{source: lena, target: org, type: "WORKS_AT"}]}, user_id: user_a})
+ra = call.(SemurgDemo.Recall, %{subject: lena, user_id: user_a})
+rb = call.(SemurgDemo.Recall, %{subject: lena, user_id: "user-b-#{run_id}"})
+users_ok =
+  Enum.all?([
+    answered.("user_id: end user A stores #{inspect(lena)} WORKS_AT #{inspect(org)}", ua, &(&1 != "")),
+    answered.("user_id: end user A's recall(#{inspect(lena)}) names #{inspect(org)}", ra, &has.(&1, org)),
+    answered.("user_id: end user B's recall(#{inspect(lena)}) answers nothing_stored (two end users never meet)", rb, &(has.(&1, "nothing_stored") and not has.(&1, org)))
+  ])
+
+keys = [:status, :remember, :recall, :context, :relate, :recall2, :document, :docctx, :g7remember, :g7, :miss, :refusal, :forget, :gone]
 IO.puts("DEMO-ROUNDTRIP " <> Enum.map_join(keys, " ", fn k -> "#{k}=#{if rt[k], do: "ok", else: "FAIL"}" end))
-finish.(Enum.all?(keys, &rt[&1]) and agent_ok, "")
+finish.(Enum.all?(keys, &rt[&1]) and agent_ok and users_ok, "")
