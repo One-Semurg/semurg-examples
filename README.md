@@ -17,7 +17,7 @@ Run one:
     # a node in Docker: export SEMURG_API_TOKEN="$(docker exec semurg cat /var/lib/semurg/.api_token)"
     cd langchain && pip install -r requirements.txt && python demo.py
 
-| Framework | Status on r11.140.20261030.b7e1c97 | Packages | File sha256 (first 16) |
+| Framework | Status on r11.141.20261030.eabb493 | Packages | File sha256 (first 16) |
 |---|---|---|---|
 | crewai | ran end to end | crewai=1.15.33, crewai-tools=1.15.33, mcp=1.30.0 | `a7c4ba6179ccb1c8` |
 | elixir-langchain | ran end to end | langchain=0.4.1, langchain_mcp=0.2.0, anubis_mcp=0.16.0, plug=1.20.3 | `17de712573e4ad60` |
