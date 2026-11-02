@@ -17,7 +17,7 @@ Run one:
     # a node in Docker: export SEMURG_API_TOKEN="$(docker exec semurg cat /var/lib/semurg/.api_token)"
     cd langchain && pip install -r requirements.txt && python demo.py
 
-| Framework | Status on r11.141.20261030.eabb493 | Packages | File sha256 (first 16) |
+| Framework | Status on r11.142.20261030.e037138 | Packages | File sha256 (first 16) |
 |---|---|---|---|
 | crewai | ran end to end | crewai=1.15.33, crewai-tools=1.15.33, mcp=1.30.0 | `a7c4ba6179ccb1c8` |
 | elixir-langchain | ran end to end | langchain=0.4.1, langchain_mcp=0.2.0, anubis_mcp=0.16.0, plug=1.20.3 | `17de712573e4ad60` |
@@ -29,6 +29,6 @@ Run one:
 | msagent | ran end to end | agent-framework=1.23.0, agent-framework-core=1.23.0, mcp=2.3.0 | `5eb91a2405a68b05` |
 | openai-agents | ran end to end | openai-agents=0.24.0, mcp=2.3.0 | `788d37f70593ac70` |
 | pydantic-ai | ran end to end | pydantic-ai-slim=2.63.0, mcp=2.3.0 | `c8cd1ba1ce797995` |
-| vercel-ai | ran end to end | ai=7.0.157, @ai-sdk/mcp=2.0.87 | `d47513cdb9b88e2e` |
+| vercel-ai | ran end to end | ai=7.0.158, @ai-sdk/mcp=2.0.88 | `d47513cdb9b88e2e` |
 
 Questions, results on your own machine, or a framework you want here: https://one.semurg.io/contact
